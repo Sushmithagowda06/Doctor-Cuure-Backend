@@ -78,7 +78,7 @@ def create_appointment():
         }
 
         service.events().insert(
-            calendarId="primary",
+            calendarId="cuurehealth@gmail.com",
             body=event
         ).execute()
 
