@@ -35,22 +35,57 @@ def get_calendar_service():
 # ---------------- AVAILABLE SLOTS (STATIC & SAFE) ----------------
 @app.get("/available-slots")
 def available_slots():
-    date_str = request.args.get("date")
-    if not date_str:
-        return jsonify({"slots": []})
+    try:
+        date_str = request.args.get("date")
+        if not date_str:
+            return jsonify({"slots": []})
 
-    return jsonify({
-        "slots": [
-            "08:00",
-            "09:00",
-            "10:00",
-            "11:00",
-            "14:00",
-            "15:00",
-            "16:00",
-            "17:00"
+        service = get_calendar_service()
+
+        candidate_slots = [
+            "08:00", "09:00", "10:00", "11:00",
+            "14:00", "15:00", "16:00", "17:00"
         ]
-    })
+
+        date = dt.date.fromisoformat(date_str)
+
+        time_min = dt.datetime.combine(date, dt.time.min).isoformat() + "Z"
+        time_max = dt.datetime.combine(date, dt.time.max).isoformat() + "Z"
+
+        events = service.events().list(
+            calendarId="cuurehealth@gmail.com",
+            timeMin=time_min,
+            timeMax=time_max,
+            singleEvents=True
+        ).execute().get("items", [])
+
+        busy_ranges = []
+        for e in events:
+            if "dateTime" in e["start"]:
+                s = dt.datetime.fromisoformat(e["start"]["dateTime"].replace("Z", ""))
+                e_ = dt.datetime.fromisoformat(e["end"]["dateTime"].replace("Z", ""))
+                busy_ranges.append((s, e_))
+
+        free_slots = []
+
+        for slot in candidate_slots:
+            slot_start = dt.datetime.fromisoformat(f"{date_str}T{slot}")
+            slot_end = slot_start + dt.timedelta(hours=1)
+
+            overlap = any(
+                not (slot_end <= b_start or slot_start >= b_end)
+                for b_start, b_end in busy_ranges
+            )
+
+            if not overlap:
+                free_slots.append(slot)
+
+        return jsonify({"slots": free_slots})
+
+    except Exception as e:
+        print("Slots error:", e)
+        return jsonify({"slots": []}), 500
+
 
 
 # ---------------- CREATE APPOINTMENT (REAL GC EVENT) ----------------
