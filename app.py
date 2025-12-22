@@ -81,22 +81,30 @@ def available_slots():
 # ---------------- CREATE APPOINTMENT ----------------
 @app.post("/create-appointment")
 def create_appointment():
-    data = request.get_json()
+    try:
+        data = request.get_json()
 
-    start = dt.datetime.fromisoformat(f"{data['date']}T{data['time']}")
-    end = start + dt.timedelta(minutes=30)
+        start = dt.datetime.fromisoformat(f"{data['date']}T{data['time']}")
+        end = start + dt.timedelta(minutes=30)
 
-    service = get_calendar_service()
+        service = get_calendar_service()
 
-    event = {
-        "summary": f"Appointment - {data['name']}",
-        "description": data.get("reason", ""),
-        "start": {"dateTime": start.isoformat(), "timeZone": "Asia/Kolkata"},
-        "end": {"dateTime": end.isoformat(), "timeZone": "Asia/Kolkata"},
-    }
+        event = {
+            "summary": f"Appointment - {data['name']}",
+            "description": data.get("reason", ""),
+            "start": {"dateTime": start.isoformat(), "timeZone": "Asia/Kolkata"},
+            "end": {"dateTime": end.isoformat(), "timeZone": "Asia/Kolkata"},
+        }
 
-    service.events().insert(calendarId="primary", body=event).execute()
-    return jsonify({"status": "success"})
+        service.events().insert(calendarId="primary", body=event).execute()
+        return jsonify({"status": "success"})
+
+    except Exception as e:
+        print("Booking error:", e)
+        return jsonify({
+            "status": "error",
+            "error": "Could not book appointment"
+        }), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
