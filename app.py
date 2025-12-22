@@ -39,6 +39,9 @@ def oauth2callback():
         f.write(flow.credentials.to_json())
 
     return "✅ Calendar connected. You can close this tab."
+@app.route("/")
+def home():
+    return "Backend is running 🚀"
 
 # ---------------- CALENDAR ----------------
 def get_calendar_service():
