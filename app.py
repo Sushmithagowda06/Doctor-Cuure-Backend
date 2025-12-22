@@ -55,50 +55,28 @@ def get_calendar_service():
 # ---------------- AVAILABLE SLOTS ----------------
 @app.get("/available-slots")
 def available_slots():
-    date_str = request.args.get("date")  # EXPECTS YYYY-MM-DD
-    if not date_str:
-        return jsonify({"slots": []})
+    try:
+        date_str = request.args.get("date")
+        if not date_str:
+            return jsonify({"slots": []})
 
-    service = get_calendar_service()
+        # TEMP STATIC SLOTS (Render-safe)
+        return jsonify({
+            "slots": [
+                "08:00",
+                "09:00",
+                "10:00",
+                "11:00",
+                "14:00",
+                "15:00",
+                "16:00",
+                "17:00"
+            ]
+        })
+    except Exception as e:
+        print("Slots error:", e)
+        return jsonify({"slots": []}), 500
 
-    candidate_times = [
-        "08:00", "09:00", "10:00", "11:00",
-        "14:00", "15:00", "16:00", "17:00"
-    ]
-
-    date = dt.date.fromisoformat(date_str)
-
-    time_min = dt.datetime.combine(date, dt.time.min).isoformat() + "Z"
-    time_max = dt.datetime.combine(date, dt.time.max).isoformat() + "Z"
-
-    events = service.events().list(
-        calendarId="primary",
-        timeMin=time_min,
-        timeMax=time_max,
-        singleEvents=True
-    ).execute().get("items", [])
-
-    busy = []
-    for e in events:
-        if "dateTime" in e["start"]:
-            s = dt.datetime.fromisoformat(e["start"]["dateTime"].replace("Z", ""))
-            e_ = dt.datetime.fromisoformat(e["end"]["dateTime"].replace("Z", ""))
-            busy.append((s, e_))
-
-    free_slots = []
-    for t in candidate_times:
-        start = dt.datetime.fromisoformat(f"{date_str}T{t}")
-        end = start + dt.timedelta(minutes=30)
-
-        overlap = any(
-            not (end <= b_start or start >= b_end)
-            for b_start, b_end in busy
-        )
-
-        if not overlap:
-            free_slots.append(t)
-
-    return jsonify({"slots": free_slots})
 
 # ---------------- CREATE APPOINTMENT ----------------
 @app.post("/create-appointment")
@@ -121,4 +99,6 @@ def create_appointment():
     return jsonify({"status": "success"})
 
 if __name__ == "__main__":
-    app.run(port=5000, debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
+
