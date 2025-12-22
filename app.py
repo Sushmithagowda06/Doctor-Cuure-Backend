@@ -1,84 +1,59 @@
 import os
-os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
-
+import json
 import datetime as dt
-from flask import Flask, request, jsonify, redirect
+
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import Flow
-from google.auth.transport.requests import Request
+from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
+
+# ---------------- CONFIG ----------------
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
-TOKEN_FILE = "token.json"
 
 app = Flask(__name__)
 CORS(app)
 
-# ---------------- AUTH ----------------
-def get_flow():
-    return Flow.from_client_secrets_file(
-        "credentials.json",
-        scopes=SCOPES,
-        redirect_uri="http://localhost:5000/oauth2callback"
-    )
 
-@app.get("/authorize")
-def authorize():
-    flow = get_flow()
-    url, _ = flow.authorization_url(access_type="offline", prompt="consent")
-    return redirect(url)
-
-@app.get("/oauth2callback")
-def oauth2callback():
-    flow = get_flow()
-    flow.fetch_token(authorization_response=request.url)
-
-    with open(TOKEN_FILE, "w") as f:
-        f.write(flow.credentials.to_json())
-
-    return "✅ Calendar connected. You can close this tab."
+# ---------------- HEALTH CHECK ----------------
 @app.route("/")
 def home():
     return "Backend is running 🚀"
 
-# ---------------- CALENDAR ----------------
+
+# ---------------- GOOGLE CALENDAR (SERVICE ACCOUNT) ----------------
 def get_calendar_service():
-    creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        with open(TOKEN_FILE, "w") as f:
-            f.write(creds.to_json())
+    creds_json = json.loads(os.environ["GC_SERVICE_ACCOUNT"])
+    creds = Credentials.from_service_account_info(
+        creds_json,
+        scopes=SCOPES
+    )
     return build("calendar", "v3", credentials=creds)
 
-# ---------------- AVAILABLE SLOTS ----------------
+
+# ---------------- AVAILABLE SLOTS (STATIC & SAFE) ----------------
 @app.get("/available-slots")
 def available_slots():
-    try:
-        date_str = request.args.get("date")
-        if not date_str:
-            return jsonify({"slots": []})
+    date_str = request.args.get("date")
+    if not date_str:
+        return jsonify({"slots": []})
 
-        # TEMP STATIC SLOTS (Render-safe)
-        return jsonify({
-            "slots": [
-                "08:00",
-                "09:00",
-                "10:00",
-                "11:00",
-                "14:00",
-                "15:00",
-                "16:00",
-                "17:00"
-            ]
-        })
-    except Exception as e:
-        print("Slots error:", e)
-        return jsonify({"slots": []}), 500
+    return jsonify({
+        "slots": [
+            "08:00",
+            "09:00",
+            "10:00",
+            "11:00",
+            "14:00",
+            "15:00",
+            "16:00",
+            "17:00"
+        ]
+    })
 
 
-# ---------------- CREATE APPOINTMENT ----------------
+# ---------------- CREATE APPOINTMENT (REAL GC EVENT) ----------------
 @app.post("/create-appointment")
 def create_appointment():
     try:
@@ -91,12 +66,22 @@ def create_appointment():
 
         event = {
             "summary": f"Appointment - {data['name']}",
-            "description": data.get("reason", ""),
-            "start": {"dateTime": start.isoformat(), "timeZone": "Asia/Kolkata"},
-            "end": {"dateTime": end.isoformat(), "timeZone": "Asia/Kolkata"},
+            "description": data.get("notes", ""),
+            "start": {
+                "dateTime": start.isoformat(),
+                "timeZone": "Asia/Kolkata"
+            },
+            "end": {
+                "dateTime": end.isoformat(),
+                "timeZone": "Asia/Kolkata"
+            }
         }
 
-        service.events().insert(calendarId="primary", body=event).execute()
+        service.events().insert(
+            calendarId="primary",
+            body=event
+        ).execute()
+
         return jsonify({"status": "success"})
 
     except Exception as e:
@@ -106,7 +91,8 @@ def create_appointment():
             "error": "Could not book appointment"
         }), 500
 
+
+# ---------------- RUN ----------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
