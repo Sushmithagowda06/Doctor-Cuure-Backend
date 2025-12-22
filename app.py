@@ -1,184 +1,121 @@
 import os
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import datetime as dt
+os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
-from google.auth.transport.requests import Request
+import datetime as dt
+from flask import Flask, request, jsonify, redirect
+from flask_cors import CORS
+
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google_auth_oauthlib.flow import Flow
+from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 
-# ================== PATH SETUP ==================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CREDS_FILE = os.path.join(BASE_DIR, "credentials.json")
-TOKEN_FILE = os.path.join(BASE_DIR, "token.json")
-
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
+TOKEN_FILE = "token.json"
 
 app = Flask(__name__)
 CORS(app)
 
+# ---------------- AUTH ----------------
+def get_flow():
+    return Flow.from_client_secrets_file(
+        "credentials.json",
+        scopes=SCOPES,
+        redirect_uri="http://localhost:5000/oauth2callback"
+    )
 
+@app.get("/authorize")
+def authorize():
+    flow = get_flow()
+    url, _ = flow.authorization_url(access_type="offline", prompt="consent")
+    return redirect(url)
 
+@app.get("/oauth2callback")
+def oauth2callback():
+    flow = get_flow()
+    flow.fetch_token(authorization_response=request.url)
 
+    with open(TOKEN_FILE, "w") as f:
+        f.write(flow.credentials.to_json())
 
-# ================== GOOGLE CALENDAR SERVICE ==================
+    return "✅ Calendar connected. You can close this tab."
+
+# ---------------- CALENDAR ----------------
 def get_calendar_service():
-    creds = None
-
-    if os.path.exists(TOKEN_FILE):
-        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                CREDS_FILE, SCOPES
-            )
-            creds = flow.run_local_server(
-    port=0,
-    prompt="consent",
-    authorization_prompt_message="Please authorize Doctor Cuure to access calendar"
-)
-
-
-        with open(TOKEN_FILE, "w") as token:
-            token.write(creds.to_json())
-
+    creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+    if creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+        with open(TOKEN_FILE, "w") as f:
+            f.write(creds.to_json())
     return build("calendar", "v3", credentials=creds)
 
-# ================== SLOT CHECK (FREEBUSY) ==================
-def is_slot_free(service, calendar_id, start_dt, end_dt):
-    ist = dt.timezone(dt.timedelta(hours=5, minutes=30))
-
-    start_ist = start_dt.replace(tzinfo=ist)
-    end_ist = end_dt.replace(tzinfo=ist)
-
-    body = {
-        "timeMin": start_ist.isoformat(),
-        "timeMax": end_ist.isoformat(),
-        "timeZone": "Asia/Kolkata",
-        "items": [{"id": calendar_id}],
-    }
-
-    freebusy = service.freebusy().query(body=body).execute()
-    busy = freebusy["calendars"][calendar_id]["busy"]
-
-    return len(busy) == 0
-
-# ================== FULL DAY LEAVE CHECK ==================
-def is_doctor_on_leave(service, calendar_id, date_obj):
-    start = dt.datetime.combine(date_obj, dt.time.min).isoformat() + "Z"
-    end = dt.datetime.combine(date_obj, dt.time.max).isoformat() + "Z"
-
-    events = service.events().list(
-        calendarId=calendar_id,
-        timeMin=start,
-        timeMax=end,
-        singleEvents=True
-    ).execute()
-
-    for event in events.get("items", []):
-        if "date" in event["start"]:  # ALL-DAY EVENT
-            return True
-
-    return False
-
-# ================== CREATE APPOINTMENT ==================
-@app.post("/create-appointment")
-def create_appointment():
-    try:
-        data = request.get_json()
-
-        name = data["name"]
-        reason = data.get("reason", "")
-        date_str = data["date"]
-        time_str = data["time"]
-
-        start_dt = dt.datetime.fromisoformat(f"{date_str}T{time_str}")
-        end_dt = start_dt + dt.timedelta(minutes=30)
-
-        service = get_calendar_service()
-        calendar_id = "primary"
-        date_obj = dt.date.fromisoformat(date_str)
-
-        # 🚫 BLOCK FULL DAY LEAVE
-        if is_doctor_on_leave(service, calendar_id, date_obj):
-            return jsonify({
-                "status": "error",
-                "message": "Doctor is not available on this date"
-            }), 409
-
-        # 🚫 BLOCK BUSY SLOT
-        if not is_slot_free(service, calendar_id, start_dt, end_dt):
-            return jsonify({
-                "status": "error",
-                "message": "Doctor is not available for this time slot"
-            }), 409
-
-        event = {
-            "summary": f"Appointment - {name}",
-            "description": reason,
-            "start": {
-                "dateTime": start_dt.isoformat(),
-                "timeZone": "Asia/Kolkata",
-            },
-            "end": {
-                "dateTime": end_dt.isoformat(),
-                "timeZone": "Asia/Kolkata",
-            },
-        }
-
-        created = service.events().insert(
-            calendarId="primary",
-            body=event
-        ).execute()
-
-        return jsonify({
-            "status": "success",
-            "eventId": created["id"]
-        })
-
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-# ================== AVAILABLE SLOTS ==================
+# ---------------- AVAILABLE SLOTS ----------------
 @app.get("/available-slots")
 def available_slots():
-    try:
-        date_str = request.args.get("date")
-        if not date_str:
-            return jsonify({"status": "error", "message": "Missing date"}), 400
+    date_str = request.args.get("date")  # EXPECTS YYYY-MM-DD
+    if not date_str:
+        return jsonify({"slots": []})
 
-        date_obj = dt.date.fromisoformat(date_str)
+    service = get_calendar_service()
 
-        service = get_calendar_service()
-        calendar_id = "primary"
+    candidate_times = [
+        "08:00", "09:00", "10:00", "11:00",
+        "14:00", "15:00", "16:00", "17:00"
+    ]
 
-        # 🚫 FULL DAY LEAVE → NO SLOTS
-        if is_doctor_on_leave(service, calendar_id, date_obj):
-            return jsonify({"status": "success", "slots": []})
+    date = dt.date.fromisoformat(date_str)
 
-        candidate_times = [
-            "08:00", "09:00", "10:00", "11:00",
-            "14:00", "15:00", "16:00", "17:00"
-        ]
+    time_min = dt.datetime.combine(date, dt.time.min).isoformat() + "Z"
+    time_max = dt.datetime.combine(date, dt.time.max).isoformat() + "Z"
 
-        free_slots = []
+    events = service.events().list(
+        calendarId="primary",
+        timeMin=time_min,
+        timeMax=time_max,
+        singleEvents=True
+    ).execute().get("items", [])
 
-        for t in candidate_times:
-            start_dt = dt.datetime.fromisoformat(f"{date_str}T{t}")
-            end_dt = start_dt + dt.timedelta(minutes=30)
+    busy = []
+    for e in events:
+        if "dateTime" in e["start"]:
+            s = dt.datetime.fromisoformat(e["start"]["dateTime"].replace("Z", ""))
+            e_ = dt.datetime.fromisoformat(e["end"]["dateTime"].replace("Z", ""))
+            busy.append((s, e_))
 
-            if is_slot_free(service, calendar_id, start_dt, end_dt):
-                free_slots.append(t)
+    free_slots = []
+    for t in candidate_times:
+        start = dt.datetime.fromisoformat(f"{date_str}T{t}")
+        end = start + dt.timedelta(minutes=30)
 
-        return jsonify({"status": "success", "slots": free_slots})
+        overlap = any(
+            not (end <= b_start or start >= b_end)
+            for b_start, b_end in busy
+        )
 
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        if not overlap:
+            free_slots.append(t)
 
-# ================== RUN SERVER ==================
+    return jsonify({"slots": free_slots})
+
+# ---------------- CREATE APPOINTMENT ----------------
+@app.post("/create-appointment")
+def create_appointment():
+    data = request.get_json()
+
+    start = dt.datetime.fromisoformat(f"{data['date']}T{data['time']}")
+    end = start + dt.timedelta(minutes=30)
+
+    service = get_calendar_service()
+
+    event = {
+        "summary": f"Appointment - {data['name']}",
+        "description": data.get("reason", ""),
+        "start": {"dateTime": start.isoformat(), "timeZone": "Asia/Kolkata"},
+        "end": {"dateTime": end.isoformat(), "timeZone": "Asia/Kolkata"},
+    }
+
+    service.events().insert(calendarId="primary", body=event).execute()
+    return jsonify({"status": "success"})
+
 if __name__ == "__main__":
-    app.run()
+    app.run(port=5000, debug=True)
