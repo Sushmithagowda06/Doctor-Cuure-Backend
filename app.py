@@ -1,6 +1,7 @@
 import os
 import json
 import datetime as dt
+IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -35,23 +36,7 @@ def get_calendar_service():
 # ---------------- AVAILABLE SLOTS (STATIC & SAFE) ----------------
 @app.get("/available-slots")
 def available_slots():
-    date_str = request.args.get("date")
-    if not date_str:
-        return jsonify({"slots": []})
-
-    return jsonify({
-        "slots": [
-            "08:00",
-            "09:00",
-            "10:00",
-            "11:00",
-            "14:00",
-            "15:00",
-            "16:00",
-            "17:00"
-        ]
-    })
-
+    return jsonify({"slots": ["TEST"]})
 
 # ---------------- CREATE APPOINTMENT (REAL GC EVENT) ----------------
 @app.post("/create-appointment")
@@ -59,10 +44,24 @@ def create_appointment():
     try:
         data = request.get_json()
 
-        start = dt.datetime.fromisoformat(f"{data['date']}T{data['time']}")
+        start = dt.datetime.fromisoformat(f"{data['date']}T{data['time']}").replace(tzinfo=IST)
         end = start + dt.timedelta(minutes=30)
 
         service = get_calendar_service()
+
+        # 🔒 DOUBLE BOOKING CHECK
+        events = service.events().list(
+            calendarId="cuurehealth@gmail.com",
+            timeMin=start.isoformat(),
+            timeMax=end.isoformat(),
+            singleEvents=True
+        ).execute().get("items", [])
+
+        if events:
+            return jsonify({
+                "status": "error",
+                "error": "This slot is already booked"
+            }), 409
 
         event = {
             "summary": f"Appointment - {data['name']}",
