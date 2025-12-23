@@ -36,7 +36,67 @@ def get_calendar_service():
 # ---------------- AVAILABLE SLOTS (STATIC & SAFE) ----------------
 @app.get("/available-slots")
 def available_slots():
-    return jsonify({"slots": ["TEST"]})
+    try:
+        date_str = request.args.get("date")
+        if not date_str:
+            return jsonify({"slots": []})
+
+        service = get_calendar_service()
+
+        candidate_slots = [
+            "08:00", "09:00", "10:00", "11:00",
+            "14:00", "15:00", "16:00", "17:00"
+        ]
+
+        now = dt.datetime.now(IST)
+        buffer_time = now + dt.timedelta(minutes=30)
+        today_str = now.date().isoformat()
+
+        date = dt.date.fromisoformat(date_str)
+
+        time_min = dt.datetime.combine(date, dt.time.min, tzinfo=IST).isoformat()
+        time_max = dt.datetime.combine(date, dt.time.max, tzinfo=IST).isoformat()
+
+        events = service.events().list(
+            calendarId="cuurehealth@gmail.com",
+            timeMin=time_min,
+            timeMax=time_max,
+            singleEvents=True
+        ).execute().get("items", [])
+
+        busy_ranges = []
+        for e in events:
+            if "dateTime" in e["start"]:
+                start = dt.datetime.fromisoformat(e["start"]["dateTime"])
+                end = dt.datetime.fromisoformat(e["end"]["dateTime"])
+                busy_ranges.append((start, end))
+
+        free_slots = []
+
+        for slot in candidate_slots:
+            slot_start = dt.datetime.fromisoformat(
+                f"{date_str}T{slot}"
+            ).replace(tzinfo=IST)
+            slot_end = slot_start + dt.timedelta(minutes=30)
+
+            # 🔒 Rule 1: Minimum 30-minute buffer for today
+            if date_str == today_str and slot_start <= buffer_time:
+                continue
+
+            # 🔒 Rule 2: Prevent double booking
+            overlap = any(
+                not (slot_end <= b_start or slot_start >= b_end)
+                for b_start, b_end in busy_ranges
+            )
+
+            if not overlap:
+                free_slots.append(slot)
+
+        return jsonify({"slots": free_slots})
+
+    except Exception as e:
+        print("Slots error:", e)
+        return jsonify({"slots": []}), 500
 
 # ---------------- CREATE APPOINTMENT (REAL GC EVENT) ----------------
 @app.post("/create-appointment")
